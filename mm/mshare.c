@@ -24,10 +24,23 @@
 
 struct mshare_data {
 	struct mm_struct *mm;
+	mode_t mode;
 	refcount_t refcnt;
 };
 
 static struct super_block *msharefs_sb;
+
+static void
+msharefs_evict_inode(struct inode *inode)
+{
+	clear_inode(inode);
+}
+
+static const struct super_operations msharefs_ops = {
+	.statfs		= simple_statfs,
+	.drop_inode	= generic_delete_inode,
+	.evict_inode	= msharefs_evict_inode,
+};
 
 static ssize_t
 mshare_read(struct kiocb *iocb, struct iov_iter *iov)
@@ -116,7 +129,7 @@ static struct inode
 }
 
 static int
-mshare_file_create(const char *name, unsigned long flags,
+mshare_file_create(struct filename *fname, int flags,
 			struct mshare_data *info)
 {
 	struct inode *inode;
@@ -125,13 +138,16 @@ mshare_file_create(const char *name, unsigned long flags,
 
 	root = msharefs_sb->s_root;
 
+	/*
+	 * This is a read only file.
+	 */
 	inode = msharefs_get_inode(msharefs_sb, S_IFREG | 0400);
 	if (IS_ERR(inode))
 		return PTR_ERR(inode);
 
 	inode->i_private = info;
 
-	dentry = msharefs_alloc_dentry(root, name);
+	dentry = msharefs_alloc_dentry(root, fname->name);
 	if (IS_ERR(dentry)) {
 		err = PTR_ERR(dentry);
 		goto fail_inode;
@@ -139,6 +155,7 @@ mshare_file_create(const char *name, unsigned long flags,
 
 	d_add(dentry, inode);
 
+	dput(dentry);
 	return err;
 
 fail_inode:
@@ -152,10 +169,13 @@ fail_inode:
 SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 		unsigned long, len, int, oflag, mode_t, mode)
 {
-	char mshare_name[NAME_MAX];
 	struct mshare_data *info;
 	struct mm_struct *mm;
-	int err;
+	struct filename *fname = getname(name);
+	struct dentry *dentry;
+	struct inode *inode;
+	struct qstr namestr;
+	int err = PTR_ERR(fname);
 
 	/*
 	 * Address range being shared must be aligned to pgdir
@@ -164,29 +184,56 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 	if ((addr | len) & (PGDIR_SIZE - 1))
 		return -EINVAL;
 
-	err = copy_from_user(mshare_name, name, NAME_MAX);
-	if (err)
+	if (IS_ERR(fname))
 		goto err_out;
 
-	mm = mm_alloc();
-	if (!mm)
-		return -ENOMEM;
-	info = kzalloc(sizeof(*info), GFP_KERNEL);
-	if (!info) {
-		err = -ENOMEM;
-		goto err_relmm;
-	}
-	mm->mmap_base = addr;
-	mm->task_size = addr + len;
-	if (!mm->task_size)
-		mm->task_size--;
-	info->mm = mm;
-	refcount_set(&info->refcnt, 1);
-
-	err = mshare_file_create(mshare_name, oflag, info);
+	/*
+	 * Does this mshare entry exist already? If it does, calling
+	 * mshare with O_EXCL|O_CREAT is an error
+	 */
+	namestr.name = fname->name;
+	namestr.len = strlen(fname->name);
+	err = msharefs_d_hash(msharefs_sb->s_root, &namestr);
 	if (err)
-		goto err_relinfo;
+		goto err_out;
+	dentry = d_lookup(msharefs_sb->s_root, &namestr);
+	if (dentry && (oflag & (O_EXCL|O_CREAT))) {
+		err = -EEXIST;
+		dput(dentry);
+		goto err_out;
+	}
 
+	if (dentry) {
+		inode = d_inode(dentry);
+		if (inode == NULL) {
+			err = -EINVAL;
+			goto err_out;
+		}
+		info = inode->i_private;
+		refcount_inc(&info->refcnt);
+		dput(dentry);
+	} else {
+		mm = mm_alloc();
+		if (!mm)
+			return -ENOMEM;
+		info = kzalloc(sizeof(*info), GFP_KERNEL);
+		if (!info) {
+			err = -ENOMEM;
+			goto err_relmm;
+		}
+		mm->mmap_base = addr;
+		mm->task_size = addr + len;
+		if (!mm->task_size)
+			mm->task_size--;
+		info->mm = mm;
+		info->mode = mode;
+		refcount_set(&info->refcnt, 1);
+		err = mshare_file_create(fname, oflag, info);
+		if (err)
+			goto err_relinfo;
+	}
+
+	putname(fname);
 	return 0;
 
 err_relinfo:
@@ -194,6 +241,7 @@ err_relinfo:
 err_relmm:
 	mmput(mm);
 err_out:
+	putname(fname);
 	return err;
 }
 
@@ -202,21 +250,54 @@ err_out:
  */
 SYSCALL_DEFINE1(mshare_unlink, const char *, name)
 {
-	char mshare_name[NAME_MAX];
-	int err;
+	struct filename *fname = getname(name);
+	int err = PTR_ERR(fname);
+	struct dentry *dentry;
+	struct inode *inode;
+	struct mshare_data *info;
+	struct qstr namestr;
 
-	/*
-	 * Delete the named object
-	 *
-	 * TODO: Mark mshare'd range for deletion
-	 *
-	 */
-	err = copy_from_user(mshare_name, name, NAME_MAX);
+	if (IS_ERR(fname))
+		goto err_out;
+
+	namestr.name = fname->name;
+	namestr.len = strlen(fname->name);
+	err = msharefs_d_hash(msharefs_sb->s_root, &namestr);
 	if (err)
 		goto err_out;
+	dentry = d_lookup(msharefs_sb->s_root, &namestr);
+	if (dentry == NULL) {
+		err = -EINVAL;
+		goto err_out;
+	}
+
+	inode = d_inode(dentry);
+	if (inode == NULL) {
+		err = -EINVAL;
+		goto err_dput;
+	}
+	info = inode->i_private;
+
+	/*
+	 * Is this the last reference?
+	 */
+	if (refcount_dec_and_test(&info->refcnt)) {
+		simple_unlink(d_inode(msharefs_sb->s_root), dentry);
+		d_drop(dentry);
+		d_delete(dentry);
+		mmput(info->mm);
+		kfree(info);
+	} else {
+		dput(dentry);
+	}
+
+	putname(fname);
 	return 0;
 
+err_dput:
+	dput(dentry);
 err_out:
+	putname(fname);
 	return err;
 }
 
@@ -230,6 +311,7 @@ msharefs_fill_super(struct super_block *sb, struct fs_context *fc)
 	static const struct tree_descr empty_descr = {""};
 	int err;
 
+	sb->s_op = &msharefs_ops;
 	sb->s_d_op = &msharefs_d_ops;
 	err = simple_fill_super(sb, MSHARE_MAGIC, &empty_descr);
 	if (err)
