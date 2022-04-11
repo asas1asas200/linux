@@ -252,11 +252,24 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 	if (dentry) {
 		unsigned long mapaddr, prot = PROT_NONE;
 
+		/*
+		 * If a task is trying to map in an existing mshare'd
+		 * range, make sure there are no overlapping mappings
+		 * in calling process already
+		 */
+		mmap_read_lock(current->mm);
+		vma = find_vma_intersection(current->mm, addr, end);
+		if (vma) {
+			mmap_read_unlock(current->mm);
+			err = -EINVAL;
+			goto err_unlock_inode;
+		}
+		mmap_read_unlock(current->mm);
+
 		inode = d_inode(dentry);
 		if (inode == NULL) {
-			mmap_write_unlock(current->mm);
 			err = -EINVAL;
-			goto err_out;
+			goto err_unlock_inode;
 		}
 		info = inode->i_private;
 		dput(dentry);
@@ -275,7 +288,7 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 				MAP_FIXED | MAP_SHARED | MAP_ANONYMOUS, 0);
 		if (IS_ERR((void *)mapaddr)) {
 			err = -EINVAL;
-			goto err_out;
+			goto err_unlock_inode;
 		}
 
 		refcount_inc(&info->refcnt);
@@ -289,7 +302,7 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 		if (vma && vma->vm_start < addr) {
 			mmap_write_unlock(current->mm);
 			err = -EINVAL;
-			goto err_out;
+			goto err_unlock_inode;
 		}
 
 		while (vma && vma->vm_start < (addr + len)) {
@@ -299,6 +312,7 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 			next = vma->vm_next;
 			vma = next;
 		}
+		mmap_write_unlock(current->mm);
 	} else {
 		unsigned long myaddr;
 		struct mm_struct *old_mm;
@@ -328,11 +342,12 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 		 * over to newly created mm_struct. TODO: If VMAs do not
 		 * exist, create them and mark them as shared.
 		 */
-		mmap_write_lock(old_mm);
+		mmap_read_lock(old_mm);
 		vma = find_vma_intersection(old_mm, addr, end);
 		if (!vma) {
+			mmap_read_unlock(old_mm);
 			err = -EINVAL;
-			goto unlock;
+			goto free_info;
 		}
 		/*
 		 * TODO: If the currently allocated VMA goes beyond the
@@ -343,17 +358,21 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 		 */
 		vma = find_vma(old_mm, addr + len);
 		if (vma && vma->vm_start < (addr + len)) {
+			mmap_read_unlock(old_mm);
 			err = -EINVAL;
-			goto unlock;
+			goto free_info;
 		}
 
 		vma = find_vma(old_mm, addr);
 		if (vma && vma->vm_start < addr) {
+			mmap_read_unlock(old_mm);
 			err = -EINVAL;
-			goto unlock;
+			goto free_info;
 		}
+		mmap_read_unlock(old_mm);
 
 		mmap_write_lock(new_mm);
+		mmap_write_lock(old_mm);
 		while (vma && vma->vm_start < (addr + len)) {
 			/*
 			 * Copy this vma over to host mm
@@ -363,20 +382,21 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 			vma->vm_flags |= VM_SHARED_PT;
 			new_vma = vm_area_dup(vma);
 			if (!new_vma) {
+				mmap_write_unlock(new_mm);
+				mmap_write_unlock(old_mm);
 				err = -ENOMEM;
-				goto unlock;
+				goto free_info;
 			}
 			err = insert_vm_struct(new_mm, new_vma);
-			if (err)
-				goto unlock;
+			if (err) {
+				mmap_write_unlock(new_mm);
+				mmap_write_unlock(old_mm);
+				err = -ENOMEM;
+				goto free_info;
+			}
 
 			vma = vma->vm_next;
 		}
-		mmap_write_unlock(new_mm);
-
-		err = mshare_file_create(fname, oflag, info);
-		if (err)
-			goto unlock;
 
 		/*
 		 * Copy over current PTEs
@@ -390,15 +410,19 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 		 * TODO: Free the corresponding page table in calling
 		 * process
 		 */
+		mmap_write_unlock(old_mm);
+		mmap_write_unlock(new_mm);
+
+		err = mshare_file_create(fname, oflag, info);
+		if (err)
+			goto free_info;
 	}
 
-	mmap_write_unlock(current->mm);
 	inode_unlock(d_inode(msharefs_sb->s_root));
 	putname(fname);
 	return 0;
 
-unlock:
-	mmap_write_unlock(current->mm);
+free_info:
 	kfree(info);
 err_relmm:
 	mmput(new_mm);
