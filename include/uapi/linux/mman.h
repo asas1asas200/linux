@@ -41,4 +41,9 @@
 #define MAP_HUGE_2GB	HUGETLB_FLAG_ENCODE_2GB
 #define MAP_HUGE_16GB	HUGETLB_FLAG_ENCODE_16GB
 
+struct mshare_info {
+	unsigned long start;
+	unsigned long size;
+};
+
 #endif /* _UAPI_LINUX_MMAN_H */

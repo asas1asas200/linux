@@ -16,14 +16,39 @@
 #include <linux/uaccess.h>
 #include <linux/pseudo_fs.h>
 #include <linux/fileattr.h>
+#include <linux/refcount.h>
+#include <linux/sched/mm.h>
 #include <uapi/linux/magic.h>
 #include <uapi/linux/limits.h>
+#include <uapi/linux/mman.h>
+
+struct mshare_data {
+	struct mm_struct *mm;
+	refcount_t refcnt;
+};
 
 static struct super_block *msharefs_sb;
 
+static ssize_t
+mshare_read(struct kiocb *iocb, struct iov_iter *iov)
+{
+	struct mshare_data *info = iocb->ki_filp->private_data;
+	struct mm_struct *mm = info->mm;
+	size_t ret;
+	struct mshare_info m_info;
+
+	m_info.start = mm->mmap_base;
+	m_info.size = mm->task_size - mm->mmap_base;
+	ret = copy_to_iter(&m_info, sizeof(m_info), iov);
+	if (!ret)
+		return -EFAULT;
+	return ret;
+}
+
 static const struct file_operations msharefs_file_operations = {
-	.open	= simple_open,
-	.llseek	= no_llseek,
+	.open		= simple_open,
+	.read_iter	= mshare_read,
+	.llseek		= no_llseek,
 };
 
 static int
@@ -77,7 +102,12 @@ static struct inode
 
 		inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
 		inode->i_fop = &msharefs_file_operations;
-		inode->i_size = 0;
+
+		/*
+		 * A read from this file will return two unsigned long
+		 */
+		inode->i_size = 2 * sizeof(unsigned long);
+
 		inode->i_uid = current_fsuid();
 		inode->i_gid = current_fsgid();
 	}
@@ -86,7 +116,8 @@ static struct inode
 }
 
 static int
-mshare_file_create(const char *name, unsigned long flags)
+mshare_file_create(const char *name, unsigned long flags,
+			struct mshare_data *info)
 {
 	struct inode *inode;
 	struct dentry *root, *dentry;
@@ -97,6 +128,8 @@ mshare_file_create(const char *name, unsigned long flags)
 	inode = msharefs_get_inode(msharefs_sb, S_IFREG | 0400);
 	if (IS_ERR(inode))
 		return PTR_ERR(inode);
+
+	inode->i_private = info;
 
 	dentry = msharefs_alloc_dentry(root, name);
 	if (IS_ERR(dentry)) {
@@ -120,6 +153,8 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 		unsigned long, len, int, oflag, mode_t, mode)
 {
 	char mshare_name[NAME_MAX];
+	struct mshare_data *info;
+	struct mm_struct *mm;
 	int err;
 
 	/*
@@ -133,8 +168,31 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 	if (err)
 		goto err_out;
 
-	err = mshare_file_create(mshare_name, oflag);
+	mm = mm_alloc();
+	if (!mm)
+		return -ENOMEM;
+	info = kzalloc(sizeof(*info), GFP_KERNEL);
+	if (!info) {
+		err = -ENOMEM;
+		goto err_relmm;
+	}
+	mm->mmap_base = addr;
+	mm->task_size = addr + len;
+	if (!mm->task_size)
+		mm->task_size--;
+	info->mm = mm;
+	refcount_set(&info->refcnt, 1);
 
+	err = mshare_file_create(mshare_name, oflag, info);
+	if (err)
+		goto err_relinfo;
+
+	return 0;
+
+err_relinfo:
+	kfree(info);
+err_relmm:
+	mmput(mm);
 err_out:
 	return err;
 }
