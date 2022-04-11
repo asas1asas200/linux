@@ -196,11 +196,12 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 	err = msharefs_d_hash(msharefs_sb->s_root, &namestr);
 	if (err)
 		goto err_out;
+	inode_lock(d_inode(msharefs_sb->s_root));
 	dentry = d_lookup(msharefs_sb->s_root, &namestr);
 	if (dentry && (oflag & (O_EXCL|O_CREAT))) {
 		err = -EEXIST;
 		dput(dentry);
-		goto err_out;
+		goto err_unlock_inode;
 	}
 
 	if (dentry) {
@@ -233,6 +234,7 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 			goto err_relinfo;
 	}
 
+	inode_unlock(d_inode(msharefs_sb->s_root));
 	putname(fname);
 	return 0;
 
@@ -240,6 +242,8 @@ err_relinfo:
 	kfree(info);
 err_relmm:
 	mmput(mm);
+err_unlock_inode:
+	inode_unlock(d_inode(msharefs_sb->s_root));
 err_out:
 	putname(fname);
 	return err;
@@ -265,10 +269,11 @@ SYSCALL_DEFINE1(mshare_unlink, const char *, name)
 	err = msharefs_d_hash(msharefs_sb->s_root, &namestr);
 	if (err)
 		goto err_out;
+	inode_lock(d_inode(msharefs_sb->s_root));
 	dentry = d_lookup(msharefs_sb->s_root, &namestr);
 	if (dentry == NULL) {
 		err = -EINVAL;
-		goto err_out;
+		goto err_unlock_inode;
 	}
 
 	inode = d_inode(dentry);
@@ -291,11 +296,14 @@ SYSCALL_DEFINE1(mshare_unlink, const char *, name)
 		dput(dentry);
 	}
 
+	inode_unlock(d_inode(msharefs_sb->s_root));
 	putname(fname);
 	return 0;
 
 err_dput:
 	dput(dentry);
+err_unlock_inode:
+	inode_unlock(d_inode(msharefs_sb->s_root));
 err_out:
 	putname(fname);
 	return err;
