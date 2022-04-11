@@ -419,16 +419,25 @@ void free_pgtables(struct mmu_gather *tlb, struct vm_area_struct *vma,
 		} else {
 			/*
 			 * Optimization: gather nearby vmas into one call down
+			 * as long as they all belong to the same mm (that
+			 * may not be the case if a vma is part of mshare'd
+			 * range
 			 */
 			while (next && next->vm_start <= vma->vm_end + PMD_SIZE
-			       && !is_vm_hugetlb_page(next)) {
+			       && !is_vm_hugetlb_page(next)
+			       && vma->vm_mm == tlb->mm) {
 				vma = next;
 				next = vma->vm_next;
 				unlink_anon_vmas(vma);
 				unlink_file_vma(vma);
 			}
-			free_pgd_range(tlb, addr, vma->vm_end,
-				floor, next ? next->vm_start : ceiling);
+			/*
+			 * Free pgd only if pgd is not allocated for an
+			 * mshare'd range
+			 */
+			if (vma->vm_mm == tlb->mm)
+				free_pgd_range(tlb, addr, vma->vm_end,
+					floor, next ? next->vm_start : ceiling);
 		}
 		vma = next;
 	}
@@ -1557,6 +1566,13 @@ void unmap_page_range(struct mmu_gather *tlb,
 {
 	pgd_t *pgd;
 	unsigned long next;
+
+	/*
+	 * If this is an mshare'd page, do not unmap it since it might
+	 * still be in use.
+	 */
+	if (vma->vm_mm != tlb->mm)
+		return;
 
 	BUG_ON(addr >= end);
 	tlb_start_vma(tlb, vma);
