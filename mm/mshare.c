@@ -25,7 +25,7 @@
 
 struct mshare_data {
 	struct mm_struct *mm, *host_mm;
-	mode_t mode;
+	int flags;
 	refcount_t refcnt;
 };
 
@@ -134,7 +134,7 @@ static struct dentry
 }
 
 static struct inode
-*msharefs_get_inode(struct super_block *sb, int mode)
+*msharefs_get_inode(struct super_block *sb, mode_t mode)
 {
 	struct inode *inode = new_inode(sb);
 
@@ -164,19 +164,22 @@ static struct inode
 }
 
 static int
-mshare_file_create(struct filename *fname, int flags,
+mshare_file_create(struct filename *fname, mode_t mode,
 			struct mshare_data *info)
 {
 	struct inode *inode;
 	struct dentry *root, *dentry;
 	int err = 0;
+	mode_t fmode;
 
 	root = msharefs_sb->s_root;
 
 	/*
-	 * This is a read only file.
+	 * This is a read only file so mask out all other bits. Make sure
+	 * it is readable by owner at least.
 	 */
-	inode = msharefs_get_inode(msharefs_sb, S_IFREG | 0400);
+	fmode = (mode & 0444) | S_IFREG | 0400;
+	inode = msharefs_get_inode(msharefs_sb, fmode);
 	if (IS_ERR(inode))
 		return PTR_ERR(inode);
 
@@ -250,6 +253,7 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 		dput(dentry);
 		goto err_unlock_inode;
 	}
+	oflag &= (O_RDONLY | O_WRONLY | O_RDWR);
 
 	if (dentry) {
 		unsigned long mapaddr, prot = PROT_NONE;
@@ -279,7 +283,11 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 		/*
 		 * Map in the address range as anonymous mappings
 		 */
-		oflag &= (O_RDONLY | O_WRONLY | O_RDWR);
+		if (oflag != (oflag & info->flags)) {
+			err = -EPERM;
+			goto err_unlock_inode;
+		}
+
 		if (oflag & O_RDONLY)
 			prot |= PROT_READ;
 		else if (oflag & O_WRONLY)
@@ -334,7 +342,7 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 			new_mm->task_size--;
 		info->mm = new_mm;
 		info->host_mm = old_mm;
-		info->mode = mode;
+		info->flags = oflag;
 		refcount_set(&info->refcnt, 1);
 
 		/*
@@ -415,7 +423,7 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 		mmap_write_unlock(old_mm);
 		mmap_write_unlock(new_mm);
 
-		err = mshare_file_create(fname, oflag, info);
+		err = mshare_file_create(fname, mode, info);
 		if (err)
 			goto free_info;
 	}
