@@ -29,6 +29,8 @@ struct mshare_data {
 	refcount_t refcnt;
 };
 
+ulong sysctl_mshare_size;
+
 static struct super_block *msharefs_sb;
 
 /* Returns holding the host mm's lock for read.  Caller must release. */
@@ -576,6 +578,7 @@ mshare_init(void)
 	if (ret)
 		sysfs_remove_mount_point(fs_kobj, "mshare");
 
+	sysctl_mshare_size = PGDIR_SIZE;
 	return ret;
 }
 

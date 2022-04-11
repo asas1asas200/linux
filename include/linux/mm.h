@@ -3347,6 +3347,7 @@ unsigned long wp_shared_mapping_range(struct address_space *mapping,
 #endif
 
 extern int sysctl_nr_trim_pages;
+extern ulong sysctl_mshare_size;
 
 #ifdef CONFIG_PRINTK
 void mem_dump_obj(void *object);

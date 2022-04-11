@@ -2799,6 +2799,13 @@ static struct ctl_table vm_table[] = {
 		.extra2		= SYSCTL_ONE,
 	},
 #endif
+	{
+		.procname	= "mshare_size",
+		.data		= &sysctl_mshare_size,
+		.maxlen		= sizeof(sysctl_mshare_size),
+		.mode		= 0444,
+		.proc_handler	= proc_doulongvec_minmax,
+	},
 	{ }
 };
 
