@@ -1231,6 +1231,54 @@ copy_p4d_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	return 0;
 }
 
+/*
+ * Copy PTEs for mshare'd pages.
+ * This code is based upon copy_page_range()
+ */
+int
+mshare_copy_ptes(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma)
+{
+	pgd_t *src_pgd, *dst_pgd;
+	unsigned long next;
+	unsigned long addr = src_vma->vm_start;
+	unsigned long end = src_vma->vm_end;
+	struct mm_struct *dst_mm = dst_vma->vm_mm;
+	struct mm_struct *src_mm = src_vma->vm_mm;
+	struct mmu_notifier_range range;
+	int ret = 0;
+
+	mmu_notifier_range_init(&range, MMU_NOTIFY_PROTECTION_PAGE,
+				0, src_vma, src_mm, addr, end);
+	mmu_notifier_invalidate_range_start(&range);
+	/*
+	 * Disabling preemption is not needed for the write side, as
+	 * the read side doesn't spin, but goes to the mmap_lock.
+	 *
+	 * Use the raw variant of the seqcount_t write API to avoid
+	 * lockdep complaining about preemptibility.
+	 */
+	mmap_assert_write_locked(src_mm);
+	raw_write_seqcount_begin(&src_mm->write_protect_seq);
+
+	dst_pgd = pgd_offset(dst_mm, addr);
+	src_pgd = pgd_offset(src_mm, addr);
+	do {
+		next = pgd_addr_end(addr, end);
+		if (pgd_none_or_clear_bad(src_pgd))
+			continue;
+		if (unlikely(copy_p4d_range(dst_vma, src_vma, dst_pgd, src_pgd,
+					    addr, next))) {
+			ret = -ENOMEM;
+			break;
+		}
+	} while (dst_pgd++, src_pgd++, addr = next, addr != end);
+
+	raw_write_seqcount_end(&src_mm->write_protect_seq);
+	mmu_notifier_invalidate_range_end(&range);
+
+	return ret;
+}
+
 int
 copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma)
 {

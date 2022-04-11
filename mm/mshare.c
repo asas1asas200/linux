@@ -388,7 +388,6 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 			 * Copy this vma over to host mm
 			 */
 			vma->vm_private_data = info;
-			vma->vm_mm = new_mm;
 			vma->vm_flags |= VM_SHARED_PT;
 			new_vma = vm_area_dup(vma);
 			if (!new_vma) {
@@ -397,6 +396,7 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 				err = -ENOMEM;
 				goto free_info;
 			}
+			new_vma->vm_mm = new_mm;
 			err = insert_vm_struct(new_mm, new_vma);
 			if (err) {
 				mmap_write_unlock(new_mm);
@@ -405,17 +405,13 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 				goto free_info;
 			}
 
+			/* Copy over current PTEs */
+			err = mshare_copy_ptes(new_vma, vma);
+			if (err != 0)
+				goto free_info;
 			vma = vma->vm_next;
 		}
 
-		/*
-		 * Copy over current PTEs
-		 */
-		myaddr = addr;
-		while (myaddr < new_mm->task_size) {
-			*pgd_offset(new_mm, myaddr) = *pgd_offset(old_mm, myaddr);
-			myaddr += PGDIR_SIZE;
-		}
 		/*
 		 * TODO: Free the corresponding page table in calling
 		 * process
