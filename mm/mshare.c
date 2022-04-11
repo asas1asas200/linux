@@ -178,6 +178,13 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 	int err = PTR_ERR(fname);
 
 	/*
+	 * Is msharefs mounted? TODO: If not mounted, return error
+	 * or automount?
+	 */
+	if (msharefs_sb == NULL)
+		return -ENOENT;
+
+	/*
 	 * Address range being shared must be aligned to pgdir
 	 * boundary and its size must be a multiple of pgdir size
 	 */
@@ -260,6 +267,9 @@ SYSCALL_DEFINE1(mshare_unlink, const char *, name)
 	struct inode *inode;
 	struct mshare_data *info;
 	struct qstr namestr;
+
+	if (msharefs_sb == NULL)
+		return -ENOENT;
 
 	if (IS_ERR(fname))
 		goto err_out;
