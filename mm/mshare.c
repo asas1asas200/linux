@@ -17,18 +17,51 @@
 #include <linux/pseudo_fs.h>
 #include <linux/fileattr.h>
 #include <linux/refcount.h>
+#include <linux/mman.h>
 #include <linux/sched/mm.h>
 #include <uapi/linux/magic.h>
 #include <uapi/linux/limits.h>
 #include <uapi/linux/mman.h>
 
 struct mshare_data {
-	struct mm_struct *mm;
+	struct mm_struct *mm, *host_mm;
 	mode_t mode;
 	refcount_t refcnt;
 };
 
 static struct super_block *msharefs_sb;
+
+/* Returns holding the host mm's lock for read.  Caller must release. */
+vm_fault_t
+find_shared_vma(struct vm_area_struct **vmap, unsigned long *addrp)
+{
+	struct vm_area_struct *vma, *guest = *vmap;
+	struct mshare_data *info = guest->vm_private_data;
+	struct mm_struct *host_mm = info->mm;
+	unsigned long host_addr;
+	pgd_t *pgd, *guest_pgd;
+
+	host_addr = *addrp - guest->vm_start + host_mm->mmap_base;
+	pgd = pgd_offset(host_mm, host_addr);
+	guest_pgd = pgd_offset(current->mm, *addrp);
+	if (!pgd_same(*guest_pgd, *pgd)) {
+		set_pgd(guest_pgd, *pgd);
+		return VM_FAULT_NOPAGE;
+	}
+
+	*addrp = host_addr;
+	mmap_read_lock(host_mm);
+	vma = find_vma(host_mm, host_addr);
+
+	/* XXX: expand stack? */
+	if (vma && vma->vm_start > host_addr)
+		vma = NULL;
+
+	*vmap = vma;
+	return 0;
+}
+
+
 
 static void
 msharefs_evict_inode(struct inode *inode)
@@ -170,11 +203,13 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 		unsigned long, len, int, oflag, mode_t, mode)
 {
 	struct mshare_data *info;
-	struct mm_struct *mm;
 	struct filename *fname = getname(name);
 	struct dentry *dentry;
 	struct inode *inode;
 	struct qstr namestr;
+	struct vm_area_struct *vma, *next, *new_vma;
+	struct mm_struct *new_mm;
+	unsigned long end;
 	int err = PTR_ERR(fname);
 
 	/*
@@ -194,6 +229,8 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 	if (IS_ERR(fname))
 		goto err_out;
 
+	end = addr + len;
+
 	/*
 	 * Does this mshare entry exist already? If it does, calling
 	 * mshare with O_EXCL|O_CREAT is an error
@@ -206,49 +243,165 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 	inode_lock(d_inode(msharefs_sb->s_root));
 	dentry = d_lookup(msharefs_sb->s_root, &namestr);
 	if (dentry && (oflag & (O_EXCL|O_CREAT))) {
+		inode = d_inode(dentry);
 		err = -EEXIST;
 		dput(dentry);
 		goto err_unlock_inode;
 	}
 
 	if (dentry) {
+		unsigned long mapaddr, prot = PROT_NONE;
+
 		inode = d_inode(dentry);
 		if (inode == NULL) {
+			mmap_write_unlock(current->mm);
 			err = -EINVAL;
 			goto err_out;
 		}
 		info = inode->i_private;
-		refcount_inc(&info->refcnt);
 		dput(dentry);
+
+		/*
+		 * Map in the address range as anonymous mappings
+		 */
+		oflag &= (O_RDONLY | O_WRONLY | O_RDWR);
+		if (oflag & O_RDONLY)
+			prot |= PROT_READ;
+		else if (oflag & O_WRONLY)
+			prot |= PROT_WRITE;
+		else if (oflag & O_RDWR)
+			prot |= (PROT_READ | PROT_WRITE);
+		mapaddr = vm_mmap(NULL, addr, len, prot,
+				MAP_FIXED | MAP_SHARED | MAP_ANONYMOUS, 0);
+		if (IS_ERR((void *)mapaddr)) {
+			err = -EINVAL;
+			goto err_out;
+		}
+
+		refcount_inc(&info->refcnt);
+
+		/*
+		 * Now that we have mmap'd the mshare'd range, update vma
+		 * flags and vm_mm pointer for this mshare'd range.
+		 */
+		mmap_write_lock(current->mm);
+		vma = find_vma(current->mm, addr);
+		if (vma && vma->vm_start < addr) {
+			mmap_write_unlock(current->mm);
+			err = -EINVAL;
+			goto err_out;
+		}
+
+		while (vma && vma->vm_start < (addr + len)) {
+			vma->vm_private_data = info;
+			vma->vm_mm = info->mm;
+			vma->vm_flags |= VM_SHARED_PT;
+			next = vma->vm_next;
+			vma = next;
+		}
 	} else {
-		mm = mm_alloc();
-		if (!mm)
+		unsigned long myaddr;
+		struct mm_struct *old_mm;
+
+		old_mm = current->mm;
+		new_mm = mm_alloc();
+		if (!new_mm)
 			return -ENOMEM;
 		info = kzalloc(sizeof(*info), GFP_KERNEL);
 		if (!info) {
 			err = -ENOMEM;
 			goto err_relmm;
 		}
-		mm->mmap_base = addr;
-		mm->task_size = addr + len;
-		if (!mm->task_size)
-			mm->task_size--;
-		info->mm = mm;
+		new_mm->mmap_base = addr;
+		new_mm->task_size = addr + len;
+		if (!new_mm->task_size)
+			new_mm->task_size--;
+		info->mm = new_mm;
+		info->host_mm = old_mm;
 		info->mode = mode;
 		refcount_set(&info->refcnt, 1);
+
+		/*
+		 * VMAs for this address range may or may not exist.
+		 * If VMAs exist, they should be marked as shared at
+		 * this point and page table info should be copied
+		 * over to newly created mm_struct. TODO: If VMAs do not
+		 * exist, create them and mark them as shared.
+		 */
+		mmap_write_lock(old_mm);
+		vma = find_vma_intersection(old_mm, addr, end);
+		if (!vma) {
+			err = -EINVAL;
+			goto unlock;
+		}
+		/*
+		 * TODO: If the currently allocated VMA goes beyond the
+		 * mshare'd range, this VMA needs to be split.
+		 *
+		 * Double check that source VMAs do not extend outside
+		 * the range
+		 */
+		vma = find_vma(old_mm, addr + len);
+		if (vma && vma->vm_start < (addr + len)) {
+			err = -EINVAL;
+			goto unlock;
+		}
+
+		vma = find_vma(old_mm, addr);
+		if (vma && vma->vm_start < addr) {
+			err = -EINVAL;
+			goto unlock;
+		}
+
+		mmap_write_lock(new_mm);
+		while (vma && vma->vm_start < (addr + len)) {
+			/*
+			 * Copy this vma over to host mm
+			 */
+			vma->vm_private_data = info;
+			vma->vm_mm = new_mm;
+			vma->vm_flags |= VM_SHARED_PT;
+			new_vma = vm_area_dup(vma);
+			if (!new_vma) {
+				err = -ENOMEM;
+				goto unlock;
+			}
+			err = insert_vm_struct(new_mm, new_vma);
+			if (err)
+				goto unlock;
+
+			vma = vma->vm_next;
+		}
+		mmap_write_unlock(new_mm);
+
 		err = mshare_file_create(fname, oflag, info);
 		if (err)
-			goto err_relinfo;
+			goto unlock;
+
+		/*
+		 * Copy over current PTEs
+		 */
+		myaddr = addr;
+		while (myaddr < new_mm->task_size) {
+			*pgd_offset(new_mm, myaddr) = *pgd_offset(old_mm, myaddr);
+			myaddr += PGDIR_SIZE;
+		}
+		/*
+		 * TODO: Free the corresponding page table in calling
+		 * process
+		 */
 	}
 
+	mmap_write_unlock(current->mm);
 	inode_unlock(d_inode(msharefs_sb->s_root));
 	putname(fname);
 	return 0;
 
-err_relinfo:
+unlock:
+	mmap_write_unlock(current->mm);
 	kfree(info);
 err_relmm:
-	mmput(mm);
+	mmput(new_mm);
 err_unlock_inode:
 	inode_unlock(d_inode(msharefs_sb->s_root));
 err_out:
@@ -295,11 +448,24 @@ SYSCALL_DEFINE1(mshare_unlink, const char *, name)
 
 	/*
 	 * Is this the last reference?
+	 * TODO: permission checks are needed before proceeding
 	 */
 	if (refcount_dec_and_test(&info->refcnt)) {
 		simple_unlink(d_inode(msharefs_sb->s_root), dentry);
 		d_drop(dentry);
 		d_delete(dentry);
+		/*
+		 * TODO: Release all physical pages allocated for this
+		 * mshare range and release associated page table. If
+		 * the final unlink happens from the process that created
+		 * mshare'd range, do we return page tables and pages to
+		 * that process so the creating process can continue using
+		 * the address range it had chosen to mshare at some
+		 * point?
+		 *
+		 * TODO: unmap shared vmas from every task that is using
+		 * this mshare'd range.
+		 */
 		mmput(info->mm);
 		kfree(info);
 	} else {

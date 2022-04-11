@@ -758,6 +758,9 @@ struct folio *try_grab_folio(struct page *page, int refs, unsigned int flags);
 
 DECLARE_PER_CPU(struct per_cpu_nodestat, boot_nodestats);
 
+extern vm_fault_t find_shared_vma(struct vm_area_struct **vma,
+			unsigned long *addrp);
+
 static inline bool vma_is_shared(const struct vm_area_struct *vma)
 {
 	return vma->vm_flags & VM_SHARED_PT;
