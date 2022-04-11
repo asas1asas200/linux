@@ -493,6 +493,17 @@ SYSCALL_DEFINE1(mshare_unlink, const char *, name)
 		mmput(info->mm);
 		kfree(info);
 	} else {
+		/*
+		 * TODO: If mshare'd range is still mapped in the process,
+		 * it should be unmapped. Following is minimal code and
+		 * might need fix up
+		 */
+		unsigned long tmp;
+
+		tmp = info->mm->task_size - info->mm->mmap_base;
+		if (info->host_mm != current->mm)
+			vm_munmap(info->mm->mmap_base, tmp);
+
 		dput(dentry);
 	}
 
