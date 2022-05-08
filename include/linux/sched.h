@@ -1,3 +1,4 @@
+// clang-format off
 /* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_SCHED_H
 #define _LINUX_SCHED_H
@@ -67,6 +68,7 @@ struct sighand_struct;
 struct signal_struct;
 struct task_delay_info;
 struct task_group;
+struct vmp_event_group;
 
 /*
  * Task state bitmask. NOTE! These bits are also
@@ -1498,6 +1500,9 @@ struct task_struct {
 	 */
 	struct callback_head		l1d_flush_kill;
 #endif
+
+	/* TODO: Add #ifdef config here. */
+	struct vmp_event_group *vmp_event_group;
 
 	/*
 	 * New fields for task_struct should be added above here, so that
