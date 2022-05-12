@@ -1,77 +1,18 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
+#include <linux/vmprofiling.h>
 
 #include <linux/ktime.h>
-#include <trace/events/vmprofiling.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "vmp: " fmt
 
-/* - tracepoint
- * - vmp_enter();
- * - vmp_exit();
- * - vmp_record();
- */
+#define CREATE_TRACE_POINTS
+#include <trace/events/vmprofiling.h>
 
-#define vmp_event_of(vmp_eventp, type) container_of(vmp_eventp, type, vmp_event)
-
-struct vmp_event {
-	ktime_t time;
-};
-
-struct vmp_event_group {
-	unsigned long type;
-	char *name;
-
-	atomic_t ticket;
-	// collect all the records
-	struct vmp_event *event;
-
-	/* record once as time */
-	unsigned int max_nr_seq_event;
-	unsigned int nr_seq_event;
-	struct vmp_event *seq_events[0];
-};
-
-/* Generic define
- */
-#define vmp_get_event(group)                                                   \
-	({                                                                     \
-		struct vmp_event *__event;                                     \
-		int __ticket = atomic_fetch_add(1, &group->ticket);             \
-		if (__ticket >= group->max_nr_seq_event)                       \
-			__event = NULL;                                        \
-		else                                                           \
-			__event = group->seq_events[__ticket];                  \
-		__event;                                                       \
-	})
-
-#define for_each_vmp_event(group, eventpp, i)                                  \
-	for (i = 0, eventpp = &group->seq_events[0];                            \
-	     i < group->max_nr_seq_event; eventpp = &group->seq_events[++i])
-
-enum vmp_event_group_type {
-	VMP_NONE = 0,
-	VMP_COPY_PAGE_RANGE = 1,
-};
-
-const char *vmp_event_group_name[2] = {
+const char *vmp_event_group_name[] = {
 	[VMP_COPY_PAGE_RANGE] = "copy_page_range",
-};
-
-/* tracepoint - page table
- */
-
-#define VMP_SEQ_EVENT_SIZE 4096
-
-struct vmp_copy_page_range {
-	struct vmp_event vmp_event;
-
-	atomic_t nr_cow_page;
-	atomic_t nr_pte;
-	atomic_t nr_pmd;
-	unsigned long pgtables_bytes;
 };
 
 void vmp_copy_page_range_enter(void)
@@ -112,6 +53,8 @@ void vmp_copy_page_range_enter(void)
 
 	current->vmp_event_group = group;
 
+	pr_info("%s register pid=%d tsk=%s\n", group->name, task_pid_nr(current), current->comm);
+
 	/* first event */
 	event = vmp_get_event(group);
 	data = vmp_event_of(event, struct vmp_copy_page_range);
@@ -134,6 +77,7 @@ void vmp_copy_page_range_record(void)
 
 	if (current->vmp_event_group->type != VMP_COPY_PAGE_RANGE)
 		return;
+	group = current->vmp_event_group;
 
 	event = vmp_get_event(group);
 	if (!event) {
@@ -161,6 +105,9 @@ void vmp_copy_page_range_exit(void)
 
 	if (current->vmp_event_group->type != VMP_COPY_PAGE_RANGE)
 		return;
+	group = current->vmp_event_group;
+
+	pr_info("%s register pid=%d\n", group->name, task_pid_nr(current));
 
 	/* last event */
 	event = vmp_get_event(group);
@@ -168,18 +115,26 @@ void vmp_copy_page_range_exit(void)
 		pr_info("max event\n");
 		return;
 	}
+
+	BUG_ON(!current->mm);
+
 	data = vmp_event_of(event, struct vmp_copy_page_range);
 	data->pgtables_bytes = mm_pgtables_bytes(current->mm);
 	event->time = ktime_get();
+	current->vmp_event_group = NULL;
 
 	// TODO: consolidate data
 
-	trace_copy_page_range(data);
+	pr_info("ticket %u\n", atomic_read(&group->ticket));
 
+	for (i = 0; i < atomic_read(&group->ticket); i++) {
+		event = group->seq_events[i];
+		data = vmp_event_of(event, struct vmp_copy_page_range);
+		trace_copy_page_range(group->name, i, data->pgtables_bytes);
+	}
 	// free data
 	for_each_vmp_event(group, eventpp, i) {
 		kfree(vmp_event_of(*eventpp, struct vmp_copy_page_range));
 	}
 	kfree(group);
-	current->vmp_event_group = NULL;
 }

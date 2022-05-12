@@ -74,6 +74,7 @@
 #include <linux/perf_event.h>
 #include <linux/ptrace.h>
 #include <linux/vmalloc.h>
+#include <linux/vmprofiling.h>
 
 #include <trace/events/kmem.h>
 
@@ -1157,6 +1158,7 @@ copy_pmd_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 		if (copy_pte_range(dst_vma, src_vma, dst_pmd, src_pmd,
 				   addr, next))
 			return -ENOMEM;
+		vmp_copy_page_range_record();
 	} while (dst_pmd++, src_pmd++, addr = next, addr != end);
 	return 0;
 }
