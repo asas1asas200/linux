@@ -19,6 +19,7 @@
 #include <linux/refcount.h>
 #include <linux/mman.h>
 #include <linux/sched/mm.h>
+#include <linux/uio.h>
 #include <uapi/linux/magic.h>
 #include <uapi/linux/limits.h>
 #include <uapi/linux/mman.h>
@@ -324,7 +325,6 @@ SYSCALL_DEFINE5(mshare, const char __user *, name, unsigned long, addr,
 		}
 		mmap_write_unlock(current->mm);
 	} else {
-		unsigned long myaddr;
 		struct mm_struct *old_mm;
 
 		old_mm = current->mm;
