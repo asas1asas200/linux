@@ -43,7 +43,6 @@ void vmp_copy_page_range_enter(void)
 	// TODO: set up the entry record event
 	group->event = NULL;
 	group->max_nr_seq_event = VMP_SEQ_EVENT_SIZE;
-	group->nr_seq_event = 0;
 
 	// TODO: alloc fail handle
 	for_each_vmp_event (group, eventpp, i) {
@@ -53,7 +52,8 @@ void vmp_copy_page_range_enter(void)
 
 	current->vmp_event_group = group;
 
-	pr_info("%s register pid=%d tsk=%s\n", group->name, task_pid_nr(current), current->comm);
+	pr_info("%s register pid=%d tsk=%s\n", group->name,
+		task_pid_nr(current), current->comm);
 
 	/* first event */
 	event = vmp_get_event(group);
@@ -133,7 +133,7 @@ void vmp_copy_page_range_exit(void)
 		trace_copy_page_range(group->name, i, data->pgtables_bytes);
 	}
 	// free data
-	for_each_vmp_event(group, eventpp, i) {
+	for_each_vmp_event (group, eventpp, i) {
 		kfree(vmp_event_of(*eventpp, struct vmp_copy_page_range));
 	}
 	kfree(group);

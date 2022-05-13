@@ -25,33 +25,37 @@ struct vmp_event_group {
 
 	/* record once as time */
 	unsigned int max_nr_seq_event;
-	unsigned int nr_seq_event;
 	struct vmp_event *seq_events[0];
 };
 
-/* Generic define
+/* Generic definition
  */
 #define vmp_get_event(group)                                                   \
 	({                                                                     \
 		struct vmp_event *__event;                                     \
-		int __ticket = atomic_fetch_add(1, &group->ticket);             \
+		int __ticket = atomic_fetch_add(1, &group->ticket);            \
 		if (__ticket >= group->max_nr_seq_event)                       \
 			__event = NULL;                                        \
 		else                                                           \
-			__event = group->seq_events[__ticket];                  \
+			__event = group->seq_events[__ticket];                 \
 		__event;                                                       \
 	})
 
 #define for_each_vmp_event(group, eventpp, i)                                  \
-	for (i = 0, eventpp = &group->seq_events[0];                            \
+	for (i = 0, eventpp = &group->seq_events[0];                           \
 	     i < group->max_nr_seq_event; eventpp = &group->seq_events[++i])
+
+extern const char *vmp_event_group_name[];
+
+#define VMP_DECLARE_EVENT(name, para)                                          \
+	void vmp_##name##_enter(void);                                         \
+	void vmp_##name##_exit(void);                                          \
+	void vmp_##name##_record(para)
 
 enum vmp_event_group_type {
 	VMP_NONE = 0,
 	VMP_COPY_PAGE_RANGE = 1,
 };
-
-extern const char *vmp_event_group_name[];
 
 /* tracepoint - page table
  */
@@ -67,8 +71,6 @@ struct vmp_copy_page_range {
 	unsigned long pgtables_bytes;
 };
 
-void vmp_copy_page_range_enter(void);
-void vmp_copy_page_range_exit(void);
-void vmp_copy_page_range_record(void);
+VMP_DECLARE_EVENT(copy_page_range, void);
 
 #endif /* __VMPROFILING_H__ */
