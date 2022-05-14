@@ -1158,7 +1158,7 @@ copy_pmd_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 		if (copy_pte_range(dst_vma, src_vma, dst_pmd, src_pmd,
 				   addr, next))
 			return -ENOMEM;
-		vmp_copy_page_range_record();
+		vmp_copy_page_range_record(dst_mm);
 	} while (dst_pmd++, src_pmd++, addr = next, addr != end);
 	return 0;
 }
