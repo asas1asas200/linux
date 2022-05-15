@@ -140,6 +140,7 @@ struct vmp_event_group {
 		if (current->vmp_event_group->type != vmp_type_##name)         \
 			return;                                                \
 		__vmp_##name##_exit(current->vmp_event_group, args);           \
+		current->vmp_event_group = NULL;                               \
 	}                                                                      \
 	static inline void vmp_##name##_record(proto)                          \
 	{                                                                      \

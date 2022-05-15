@@ -55,7 +55,6 @@ VMP_DEFINE_EXIT(copy_page_range, struct mm_struct *mm)
 	data = vmp_event_of(event, struct vmp_copy_page_range);
 	data->pgtables_bytes = mm_pgtables_bytes(mm);
 	event->time = ktime_get();
-	current->vmp_event_group = NULL;
 
 	// TODO: consolidate data
 
