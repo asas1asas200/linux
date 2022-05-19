@@ -126,7 +126,7 @@ struct vmp_event_group {
 		struct vmp_event_group *group;                                 \
 		if (!trace_##name##_enabled())                                 \
 			return;                                                \
-		group = vmp_event_group_init(copy_page_range, nr_event);       \
+		group = vmp_event_group_init(name, nr_event);                  \
 		if (!group)                                                    \
 			return;                                                \
 		__vmp_##name##_enter(group, args);                             \
