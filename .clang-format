@@ -506,6 +506,7 @@ ForEachMacros:
   - 'xbc_node_for_each_child'
   - 'xbc_node_for_each_key_value'
   - 'zorro_for_each_dev'
+  - 'for_each_vmp_event'
 
 #IncludeBlocks: Preserve # Unknown to clang-format-5.0
 IncludeCategories:
