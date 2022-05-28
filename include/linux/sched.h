@@ -67,6 +67,7 @@ struct sighand_struct;
 struct signal_struct;
 struct task_delay_info;
 struct task_group;
+struct vmp_event_group;
 
 /*
  * Task state bitmask. NOTE! These bits are also
@@ -1491,6 +1492,8 @@ struct task_struct {
 	unsigned int			getblk_bh_count;
 	unsigned long			getblk_bh_state;
 #endif
+
+	struct vmp_event_group *vmp_event_group;
 
 	/*
 	 * New fields for task_struct should be added above here, so that
