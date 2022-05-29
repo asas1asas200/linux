@@ -9,6 +9,7 @@
 
 struct vmp_event {
 	ktime_t time;
+	const char *func;
 };
 
 struct vmp_event_group {
@@ -39,6 +40,13 @@ struct vmp_event_group {
 	VMP_DECLARE_EXIT(name, proto);\
 	VMP_DECLARE_RECORD(name, proto)
 
+#define VMP_DEFINE_ENTER(name, args...)                                        \
+	void __vmp_##name##_enter(struct vmp_event_group *group, args)
+#define VMP_DEFINE_EXIT(name, args...)                                         \
+	void __vmp_##name##_exit(struct vmp_event_group *group, args)
+#define VMP_DEFINE_RECORD(name, args...)                                       \
+	void __vmp_##name##_record(struct vmp_event_group *group, args)
+
 #define __VMP_PROTO(args...) args
 #define __VMP_ARGS(args...) args
 
@@ -56,18 +64,27 @@ enum vmp_event_group_type {
 struct vmp_pgtable_generic {
 	struct vmp_event vmp_event;
 
-	unsigned int nr_pte_locked;
-	unsigned int nr_pmd_locked;
-	unsigned int nr_mmap_locked;
-	unsigned int nr_page_table_locked;
+	unsigned long nr_pte_locked;
+	unsigned long nr_pmd_locked;
+	unsigned long nr_mmap_locked;
+	unsigned long long nr_page_table_locked;
 };
+
 
 #define VMP_PGTABLE_DECLARE(type) vmp_##type
 enum {
+	/* generic record event */
 	VMP_PGTABLE_DECLARE(pte_locked) = 0x001,
 	VMP_PGTABLE_DECLARE(pmd_locked) = 0x002,
 	VMP_PGTABLE_DECLARE(mmap_locked) = 0x004,
 	VMP_PGTABLE_DECLARE(page_table_locked) = 0x008,
+};
+
+enum {
+	/* seq event record func */
+	VMP_PGTABLE_DECLARE(enter) = 0,
+	VMP_PGTABLE_DECLARE(exit),
+	VMP_PGTABLE_DECLARE(copy_page_range),
 };
 
 #undef VMP_PGTABLE_DECLARE
@@ -76,13 +93,13 @@ struct vmp_pgtable {
 	struct vmp_event vmp_event;
 
 	/* can get from mm_struct */
-	unsigned int pgtable_bytes;
+	unsigned long pgtable_bytes;
 	unsigned int pinned_vm;
 
 	/* needs to walk */
 	unsigned int nr_swap;
 	unsigned int nr_cow_page;
-	struct mm_rss_stat rss;
+	int rss[NR_MM_COUNTERS];
 
 #define VMP_PGTABLE_DECLARE(pxd)                                               \
 	unsigned int nr_##pxd;                                                 \

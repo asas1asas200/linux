@@ -103,6 +103,8 @@
 #include <asm/cacheflush.h>
 #include <asm/tlbflush.h>
 
+#include <linux/vmprofiling.h>
+
 #include <trace/events/sched.h>
 
 #define CREATE_TRACE_POINTS
@@ -524,6 +526,8 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 	if (retval)
 		goto out;
 
+	vmp_pgtable_record(oldmm, vmp_copy_page_range, true);
+
 	prev = NULL;
 	for (mpnt = oldmm->mmap; mpnt; mpnt = mpnt->vm_next) {
 		struct file *file;
@@ -617,6 +621,9 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 	/* a new mm has just been created */
 	retval = arch_dup_mmap(oldmm, mm);
 out:
+
+	vmp_pgtable_record(oldmm, vmp_copy_page_range, true);
+
 	mmap_write_unlock(mm);
 	flush_tlb_mm(oldmm);
 	mmap_write_unlock(oldmm);

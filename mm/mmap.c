@@ -2520,7 +2520,7 @@ int expand_downwards(struct vm_area_struct *vma,
 				 * So, we reuse mm->page_table_lock to guard
 				 * against concurrent vma expansions.
 				 */
-				vmp_pgtable_reocrd(mm, vmp_page_table_locked, false);
+				vmp_pgtable_record(mm, vmp_page_table_locked, false);
 				spin_lock(&mm->page_table_lock);
 				if (vma->vm_flags & VM_LOCKED)
 					mm->locked_vm += grow;
