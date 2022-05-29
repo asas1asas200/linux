@@ -33,6 +33,8 @@
 #include <linux/pgtable.h>
 #include <linux/kasan.h>
 
+#include <linux/vmprofiling.h>
+
 struct mempolicy;
 struct anon_vma;
 struct anon_vma_chain;
@@ -2316,6 +2318,7 @@ static inline spinlock_t *ptlock_ptr(struct page *page)
 
 static inline spinlock_t *pte_lockptr(struct mm_struct *mm, pmd_t *pmd)
 {
+	vmp_pgtable_record(mm, vmp_pte_locked, false);
 	return ptlock_ptr(pmd_page(*pmd));
 }
 
@@ -2341,6 +2344,7 @@ static inline bool ptlock_init(struct page *page)
  */
 static inline spinlock_t *pte_lockptr(struct mm_struct *mm, pmd_t *pmd)
 {
+	vmp_pgtable_record(mm, vmp_page_table_locked, false);
 	return &mm->page_table_lock;
 }
 static inline void ptlock_cache_init(void) {}
@@ -2407,6 +2411,7 @@ static struct page *pmd_to_page(pmd_t *pmd)
 
 static inline spinlock_t *pmd_lockptr(struct mm_struct *mm, pmd_t *pmd)
 {
+	vmp_pgtable_record(mm, vmp_pmd_locked, false);
 	return ptlock_ptr(pmd_to_page(pmd));
 }
 
@@ -2432,6 +2437,7 @@ static inline void pmd_ptlock_free(struct page *page)
 
 static inline spinlock_t *pmd_lockptr(struct mm_struct *mm, pmd_t *pmd)
 {
+	vmp_pgtable_record(mm, vmp_page_table_locked, false);
 	return &mm->page_table_lock;
 }
 
@@ -2473,6 +2479,7 @@ static inline void pgtable_pmd_page_dtor(struct page *page)
  */
 static inline spinlock_t *pud_lockptr(struct mm_struct *mm, pud_t *pud)
 {
+	vmp_pgtable_record(mm, vmp_page_table_locked, false);
 	return &mm->page_table_lock;
 }
 
