@@ -3,6 +3,9 @@
 #include <linux/sched.h>
 #include <linux/debugfs.h>
 #include <linux/vmprofiling.h>
+#include <linux/mm_types.h>
+#include <linux/swap.h>
+#include <linux/swapops.h>
 
 #include <linux/pagewalk.h>
 #include <linux/ktime.h>
@@ -22,6 +25,17 @@ VMP_DEFINE_EVENT(pgtable, VMP_SEQ_EVENT_SIZE,
 			      bool per_event),
 		  __VMP_ARGS(mm, generic_type, per_event));
 
+static const char *vmp_pgtable_name[] = {
+	[vmp_enter] = "enter",
+	[vmp_exit] = "exit",
+	[vmp_copy_page_range] = "copy_page_range",
+};
+
+static inline void init_rss_vec(int *rss)
+{
+	memset(rss, 0, sizeof(int) * NR_MM_COUNTERS);
+}
+
 static inline int vmp_pte_entry(pte_t *pte, unsigned long addr,
 			 unsigned long next, struct mm_walk *walk)
 {
@@ -32,7 +46,7 @@ static inline int vmp_pte_entry(pte_t *pte, unsigned long addr,
 		data->nr_cow_page++;
 
 	if (pte_present(*pte)) {
-		page = vm_normal_page(walk->vma, addr, pte);
+		page = vm_normal_page(walk->vma, addr, *pte);
 		if (!page)
 			pr_info("vmp: walker: physical page is NULL");
 		else
@@ -61,7 +75,7 @@ static inline int vmp_pud_entry(pud_t *pud, unsigned long addr,
 {
 	struct vmp_pgtable *data = walk->private;
 
-	if (p4d_present(*pud))
+	if (pud_present(*pud))
 		data->nr_present_pud_entry++;
 	data->nr_pmd++;
 	return 0;
@@ -96,14 +110,17 @@ static const struct mm_walk_ops vmp_walk_ops = {
 };
 
 static inline void vmp_pgtable_event(struct vmp_event *event,
-		struct mm_struct *mm)
+		struct mm_struct *mm, int type)
 {
 	struct vmp_pgtable *data = vmp_event_of(event, struct vmp_pgtable);
 
 	init_rss_vec(data->rss);
 
-	data->pgtable_bytes = mm->pgtable_bytes;
-	data->pinned_vm = mm->pinned_vm;
+	event->time = ktime_get();
+	event->func = vmp_pgtable_name[type];
+
+	data->pgtable_bytes = atomic_long_read(&mm->pgtables_bytes);
+	data->pinned_vm = atomic64_read(&mm->pinned_vm);
 
 	walk_page_range(mm, 0, mm->highest_vm_end, &vmp_walk_ops, data);
 }
@@ -132,9 +149,9 @@ static inline void vmp_pgtable_generic_record(struct vmp_event *event,
 VMP_DEFINE_ENTER(pgtable, struct mm_struct *mm, int generic_type, bool per_event)
 {
 	struct vmp_event *event;
-	struct vmp_pgtable_generic = *generic_data;
+	struct vmp_pgtable_generic *generic_data;
 
-	generic_data = kmalloc(sizeof(*generic_data), GFP_KERNEL);
+	generic_data = kmalloc(sizeof(struct vmp_pgtable_generic), GFP_KERNEL);
 	group->event = &generic_data->vmp_event;
 
 	event = vmp_get_event(group);
@@ -143,7 +160,7 @@ VMP_DEFINE_ENTER(pgtable, struct mm_struct *mm, int generic_type, bool per_event
 
 	vmp_pgtable_generic_record(group->event, generic_type);
 	mmap_read_lock(mm);
-	vmp_pgtable_event(event, mm);
+	vmp_pgtable_event(event, mm, vmp_enter);
 	mmap_read_unlock(mm);
 }
 
@@ -162,13 +179,15 @@ VMP_DEFINE_RECORD(pgtable, struct mm_struct *mm, int generic_type, bool per_even
 		event = vmp_get_event(group);
 		if (!event)
 			goto out;
-		vmp_pgtable_event(event, mm);
+		vmp_pgtable_event(event, mm, generic_type);
 	} else
 		vmp_pgtable_generic_record(group->event, generic_type);
 
 out:
 	WRITE_ONCE(recording, false);
 }
+
+#define PGTABLE_PA(pxd) data->nr_##pxd, data->nr_present_##pxd##_entry
 
 VMP_DEFINE_EXIT(pgtable, struct mm_struct *mm, int generic_type, bool per_event)
 {
@@ -179,14 +198,14 @@ VMP_DEFINE_EXIT(pgtable, struct mm_struct *mm, int generic_type, bool per_event)
 
 	vmp_pgtable_generic_record(group->event, generic_type);
 	event = vmp_get_event(group);
-	if (!event) {
+	if (event) {
 		mmap_read_lock(mm);
-		vmp_pgtable_event(event, mm);
+		vmp_pgtable_event(event, mm, vmp_exit);
 		mmap_read_unlock(mm);
 	}
 
 	generic_data = vmp_event_of(group->event, struct vmp_pgtable_generic);
-	pr_info("vmp: lock pte=%lu pmd=%lu mmap=%lu page table=%lu",
+	pr_info("vmp: lock pte=%lu pmd=%lu mmap=%lu page table=%llu",
 			generic_data->nr_pte_locked,
 			generic_data->nr_pmd_locked,
 			generic_data->nr_mmap_locked,
@@ -195,17 +214,23 @@ VMP_DEFINE_EXIT(pgtable, struct mm_struct *mm, int generic_type, bool per_event)
 
 	// free data
 	for_each_vmp_event (group, eventpp, i) {
-		data = vmp_event_of(event, struct vmp_pgtable);
-		trace_pgtable(i, data->pgtable_bytes, data->pinned_vm,
-				data->nr_swap, data->nr_cow_page, &data->rss,
+		data = vmp_event_of(*eventpp, struct vmp_pgtable);
+		if (i < atomic_read(&group->ticket))
+			trace_pgtable(i,
+				ktime_to_ns((*eventpp)->time),
+				(*eventpp)->func,
+				data->pgtable_bytes, data->pinned_vm,
+				data->nr_swap, data->nr_cow_page, &data->rss[0],
 				data->nr_present_pte_entry,
-				PGTABLE_DD(pmd),
-				PGTABLE_DD(pud),
-				PGTABLE_DD(p44d));
+				PGTABLE_PA(pmd),
+				PGTABLE_PA(pud),
+				PGTABLE_PA(p4d));
 		kfree(data);
 	}
 	kfree(group);
 }
+
+#undef PGTABLE_PA
 
 static int vmp_open(struct inode *inode, struct file *file)
 {
@@ -230,7 +255,7 @@ static ssize_t vmp_enter_write(struct file *file, const char __user *buffer,
 		pr_err("Read pid error: %d\n", ret);
 		return ret;
 	} else {
-		pr_info("Read pid successfully: %d\n", res);
+		pr_info("Read pid successfully: %lld\n", res);
 		pid = find_get_pid(res);
 		task = pid_task(pid, PIDTYPE_PID);
 
@@ -243,7 +268,7 @@ static ssize_t vmp_enter_write(struct file *file, const char __user *buffer,
 	}
 }
 
-static ssize_t vmp_enter_write(struct file *file, const char __user *buffer,
+static ssize_t vmp_exit_write(struct file *file, const char __user *buffer,
 				 size_t len, loff_t *off)
 {
 	unsigned long long res;
@@ -255,7 +280,7 @@ static ssize_t vmp_enter_write(struct file *file, const char __user *buffer,
 		pr_err("Read pid error: %d\n", ret);
 		return ret;
 	} else {
-		pr_info("Read pid successfully: %d\n", res);
+		pr_info("Read pid successfully: %lld\n", res);
 		pid = find_get_pid(res);
 		task = pid_task(pid, PIDTYPE_PID);
 
@@ -286,7 +311,7 @@ static int __init vmp_init(void)
 
 	vmp_dentry = debugfs_create_dir("vmprofiling", NULL);
 	debugfs_create_file("enter", 0444, vmp_dentry, NULL,
-			    &vmp_pgtable_fops);
+			    &vmp_pgtable_enter_fops);
 	debugfs_create_file("exit", 0444, vmp_dentry, NULL,
 			    &vmp_pgtable_exit_fops);
 

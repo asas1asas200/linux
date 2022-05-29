@@ -97,9 +97,6 @@
 	})
 
 #define VMP_DEFINE_EVENT(name, nr_event, proto, args)                          \
-	VMP_DEFINE_ENTER(name, proto);                                         \
-	VMP_DEFINE_EXIT(name, proto);                                          \
-	VMP_DEFINE_RECORD(name, proto);                                        \
 	void vmp_##name##_enter(struct task_struct *task, proto) \
 	{                                                                      \
 		struct vmp_event_group *group;                                 \
