@@ -4940,6 +4940,7 @@ int __p4d_alloc(struct mm_struct *mm, pgd_t *pgd, unsigned long address)
 	if (!new)
 		return -ENOMEM;
 
+	vmp_pgtable_record(mm, vmp_page_table_locked, false);
 	spin_lock(&mm->page_table_lock);
 	if (pgd_present(*pgd)) {	/* Another has populated it */
 		p4d_free(mm, new);
@@ -4963,6 +4964,7 @@ int __pud_alloc(struct mm_struct *mm, p4d_t *p4d, unsigned long address)
 	if (!new)
 		return -ENOMEM;
 
+	vmp_pgtable_record(mm, vmp_page_table_locked, false);
 	spin_lock(&mm->page_table_lock);
 	if (!p4d_present(*p4d)) {
 		mm_inc_nr_puds(mm);

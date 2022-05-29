@@ -34,6 +34,8 @@
 #include <linux/pgtable.h>
 #include <linux/kasan.h>
 
+#include <linux/vmprofiling.h>
+
 struct mempolicy;
 struct anon_vma;
 struct anon_vma_chain;

@@ -353,6 +353,7 @@ static int browse_rb(struct mm_struct *mm)
 				  vma->vm_start, vma->vm_end);
 			bug = 1;
 		}
+		vmp_pgtable_record(mm, vmp_page_table_locked, false);
 		spin_lock(&mm->page_table_lock);
 		if (vma->rb_subtree_gap != vma_compute_subtree_gap(vma)) {
 			pr_emerg("free gap %lx, correct %lx\n",
@@ -2438,6 +2439,7 @@ int expand_upwards(struct vm_area_struct *vma, unsigned long address)
 				 * So, we reuse mm->page_table_lock to guard
 				 * against concurrent vma expansions.
 				 */
+				vmp_pgtable_record(mm, vmp_page_table_locked, false);
 				spin_lock(&mm->page_table_lock);
 				if (vma->vm_flags & VM_LOCKED)
 					mm->locked_vm += grow;
@@ -2518,6 +2520,7 @@ int expand_downwards(struct vm_area_struct *vma,
 				 * So, we reuse mm->page_table_lock to guard
 				 * against concurrent vma expansions.
 				 */
+				vmp_pgtable_reocrd(mm, vmp_page_table_locked, false);
 				spin_lock(&mm->page_table_lock);
 				if (vma->vm_flags & VM_LOCKED)
 					mm->locked_vm += grow;

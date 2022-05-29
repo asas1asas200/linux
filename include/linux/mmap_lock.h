@@ -8,6 +8,8 @@
 #include <linux/tracepoint-defs.h>
 #include <linux/types.h>
 
+#include <linux/vmprofiling.h>
+
 #define MMAP_LOCK_INITIALIZER(name) \
 	.mmap_lock = __RWSEM_INITIALIZER((name).mmap_lock),
 
@@ -27,6 +29,7 @@ static inline void __mmap_lock_trace_start_locking(struct mm_struct *mm,
 {
 	if (tracepoint_enabled(mmap_lock_start_locking))
 		__mmap_lock_do_trace_start_locking(mm, write);
+	vmp_pgtable_record(mm, vmp_mmap_locked, false);
 }
 
 static inline void __mmap_lock_trace_acquire_returned(struct mm_struct *mm,

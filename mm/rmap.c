@@ -203,6 +203,7 @@ int __anon_vma_prepare(struct vm_area_struct *vma)
 
 	anon_vma_lock_write(anon_vma);
 	/* page_table_lock to protect against threads */
+	vmp_pgtable_record(mm, vmp_page_table_locked, false);
 	spin_lock(&mm->page_table_lock);
 	if (likely(!vma->anon_vma)) {
 		vma->anon_vma = anon_vma;
