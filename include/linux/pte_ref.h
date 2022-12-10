@@ -10,6 +10,8 @@
 #include <linux/pgtable.h>
 #include <linux/page-flags.h>
 
+#include <linux/vmprofiling.h>
+
 enum pte_tryget_type {
 	TRYGET_SUCCESSED,
 	TRYGET_FAILED_ZERO,
@@ -47,6 +49,7 @@ static inline void pte_get_many(pmd_t *pmd, unsigned int nr)
 
 	VM_BUG_ON(!PageTable(pte));
 	atomic_add(nr, &pte->pte_refcount);
+	vmp_pgtable_record(NULL, vmp_pte_get_many, false);
 }
 
 static inline void __pte_put_many(struct mmu_gather *tlb, struct mm_struct *mm,
@@ -58,6 +61,8 @@ static inline void __pte_put_many(struct mmu_gather *tlb, struct mm_struct *mm,
 	VM_BUG_ON(!PageTable(pte));
 	if (atomic_sub_and_test(nr, &pte->pte_refcount))
 		free_user_pte_table(tlb, mm, pmd, addr & PMD_MASK);
+	vmp_pgtable_record(mm, vmp_pte_put_many, false);
+	vmp_pgtable_record(mm, vmp_seq_event_pte_put_many, true);
 }
 
 static inline void __pte_put(struct mmu_gather *tlb, struct mm_struct *mm,

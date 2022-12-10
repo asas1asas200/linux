@@ -21,14 +21,16 @@
 /* Custom vmp event start here */
 
 VMP_DEFINE_EVENT(pgtable, VMP_SEQ_EVENT_SIZE,
-		  __VMP_PROTO(struct mm_struct *mm, int generic_type,
-			      bool per_event),
-		  __VMP_ARGS(mm, generic_type, per_event));
+		 __VMP_PROTO(struct mm_struct *mm, int generic_type,
+			     bool per_event),
+		 __VMP_ARGS(mm, generic_type, per_event));
 
 static const char *vmp_pgtable_name[] = {
 	[vmp_enter] = "enter",
 	[vmp_exit] = "exit",
 	[vmp_copy_page_range] = "copy_page_range",
+	[vmp_seq_event_pte_get_many] = "pte_get_many",
+	[vmp_seq_event_pte_put_many] = "pte_put_many",
 };
 
 static inline void init_rss_vec(int *rss)
@@ -37,7 +39,7 @@ static inline void init_rss_vec(int *rss)
 }
 
 static inline int vmp_pte_entry(pte_t *pte, unsigned long addr,
-			 unsigned long next, struct mm_walk *walk)
+				unsigned long next, struct mm_walk *walk)
 {
 	struct vmp_pgtable *data = walk->private;
 	struct page *page = NULL;
@@ -61,7 +63,7 @@ static inline int vmp_pte_entry(pte_t *pte, unsigned long addr,
 }
 
 static inline int vmp_pmd_entry(pmd_t *pmd, unsigned long addr,
-			 unsigned long next, struct mm_walk *walk)
+				unsigned long next, struct mm_walk *walk)
 {
 	struct vmp_pgtable *data = walk->private;
 
@@ -71,7 +73,7 @@ static inline int vmp_pmd_entry(pmd_t *pmd, unsigned long addr,
 }
 
 static inline int vmp_pud_entry(pud_t *pud, unsigned long addr,
-			 unsigned long next, struct mm_walk *walk)
+				unsigned long next, struct mm_walk *walk)
 {
 	struct vmp_pgtable *data = walk->private;
 
@@ -82,7 +84,7 @@ static inline int vmp_pud_entry(pud_t *pud, unsigned long addr,
 }
 
 static inline int vmp_p4d_entry(p4d_t *p4d, unsigned long addr,
-			 unsigned long next, struct mm_walk *walk)
+				unsigned long next, struct mm_walk *walk)
 {
 	struct vmp_pgtable *data = walk->private;
 
@@ -93,7 +95,7 @@ static inline int vmp_p4d_entry(p4d_t *p4d, unsigned long addr,
 }
 
 static inline int vmp_pgd_entry(pgd_t *pgd, unsigned long addr,
-			 unsigned long next, struct mm_walk *walk)
+				unsigned long next, struct mm_walk *walk)
 {
 	struct vmp_pgtable *data = walk->private;
 
@@ -110,7 +112,7 @@ static const struct mm_walk_ops vmp_walk_ops = {
 };
 
 static inline void vmp_pgtable_event(struct vmp_event *event,
-		struct mm_struct *mm, int type)
+				     struct mm_struct *mm, int type)
 {
 	struct vmp_pgtable *data = vmp_event_of(event, struct vmp_pgtable);
 
@@ -125,11 +127,10 @@ static inline void vmp_pgtable_event(struct vmp_event *event,
 	walk_page_range(mm, 0, mm->highest_vm_end, &vmp_walk_ops, data);
 }
 
-static inline void vmp_pgtable_generic_record(struct vmp_event *event,
-		int type)
+static inline void vmp_pgtable_generic_record(struct vmp_event *event, int type)
 {
-	struct vmp_pgtable_generic *data = vmp_event_of(event,
-			struct vmp_pgtable_generic);
+	struct vmp_pgtable_generic *data =
+		vmp_event_of(event, struct vmp_pgtable_generic);
 
 	if (unlikely(!data))
 		return;
@@ -144,9 +145,18 @@ static inline void vmp_pgtable_generic_record(struct vmp_event *event,
 		data->nr_mmap_locked++;
 	if (type & vmp_page_table_locked)
 		data->nr_page_table_locked++;
+	if (type & vmp_pte_get_many)
+		data->nr_pte_get_many++;
+	if (type & vmp_pte_put_many)
+		data->nr_pte_put_many++;
+	if (type & vmp_get_unless_zero)
+		data->nr_get_unless_zero++;
+	if (type & vmp_free_user_pte_table)
+		data->nr_free_user_pte_table++;
 }
 
-VMP_DEFINE_ENTER(pgtable, struct mm_struct *mm, int generic_type, bool per_event)
+VMP_DEFINE_ENTER(pgtable, struct mm_struct *mm, int generic_type,
+		 bool per_event)
 {
 	struct vmp_event *event;
 	struct vmp_pgtable_generic *generic_data;
@@ -165,12 +175,14 @@ VMP_DEFINE_ENTER(pgtable, struct mm_struct *mm, int generic_type, bool per_event
 }
 
 /* It should hold the mmap_lock */
-VMP_DEFINE_RECORD(pgtable, struct mm_struct *mm, int generic_type, bool per_event)
+VMP_DEFINE_RECORD(pgtable, struct mm_struct *mm, int generic_type,
+		  bool per_event)
 {
 	struct vmp_event *event;
 	static bool recording = false;
 
-	if (READ_ONCE(recording))
+	if (READ_ONCE(recording) ||
+			atomic_read(&group->ticket) + 1 == group->max_nr_seq_event)
 		return;
 
 	WRITE_ONCE(recording, true);
@@ -205,26 +217,26 @@ VMP_DEFINE_EXIT(pgtable, struct mm_struct *mm, int generic_type, bool per_event)
 	}
 
 	generic_data = vmp_event_of(group->event, struct vmp_pgtable_generic);
-	pr_info("vmp: lock pte=%lu pmd=%lu mmap=%lu page table=%llu",
-			generic_data->nr_pte_locked,
-			generic_data->nr_pmd_locked,
-			generic_data->nr_mmap_locked,
-			generic_data->nr_page_table_locked
-		);
+	pr_info("lock pte=%lu pmd=%lu mmap=%lu page table=%llu",
+		generic_data->nr_pte_locked, generic_data->nr_pmd_locked,
+		generic_data->nr_mmap_locked,
+		generic_data->nr_page_table_locked);
+	pr_info("pte_ref: put many=%llu get_many=%llu get_unless_zero=%llu free_user_pte_table=%llu\n",
+		generic_data->nr_pte_put_many, generic_data->nr_pte_get_many,
+		generic_data->nr_get_unless_zero,
+		generic_data->nr_free_user_pte_table);
 
 	// free data
 	for_each_vmp_event (group, eventpp, i) {
 		data = vmp_event_of(*eventpp, struct vmp_pgtable);
 		if (i < atomic_read(&group->ticket))
-			trace_pgtable(i,
-				ktime_to_ns((*eventpp)->time),
-				(*eventpp)->func,
-				data->pgtable_bytes, data->pinned_vm,
-				data->nr_swap, data->nr_cow_page, &data->rss[0],
-				data->nr_present_pte_entry,
-				PGTABLE_PA(pmd),
-				PGTABLE_PA(pud),
-				PGTABLE_PA(p4d));
+			trace_pgtable(i, ktime_to_ns((*eventpp)->time),
+				      (*eventpp)->func, data->pgtable_bytes,
+				      data->pinned_vm, data->nr_swap,
+				      data->nr_cow_page, &data->rss[0],
+				      data->nr_present_pte_entry,
+				      PGTABLE_PA(pmd), PGTABLE_PA(pud),
+				      PGTABLE_PA(p4d));
 		kfree(data);
 	}
 	kfree(group);
@@ -244,7 +256,7 @@ static int vmp_close(struct inode *inode, struct file *file)
 }
 
 static ssize_t vmp_enter_write(struct file *file, const char __user *buffer,
-				 size_t len, loff_t *off)
+			       size_t len, loff_t *off)
 {
 	unsigned long long res;
 	struct pid *pid;
@@ -269,7 +281,7 @@ static ssize_t vmp_enter_write(struct file *file, const char __user *buffer,
 }
 
 static ssize_t vmp_exit_write(struct file *file, const char __user *buffer,
-				 size_t len, loff_t *off)
+			      size_t len, loff_t *off)
 {
 	unsigned long long res;
 	struct pid *pid;

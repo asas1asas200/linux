@@ -21,9 +21,6 @@
 		struct vmp_event *__event;                                     \
 		int __ticket = atomic_fetch_add(1, &group->ticket);            \
 		if (__ticket >= group->max_nr_seq_event) {                     \
-			pr_info("%s pid=%d tsk=%s event=%u max event\n",       \
-				group->name, task_pid_nr(current),             \
-				current->comm, group->max_nr_seq_event);       \
 			__event = NULL;                                        \
 		} else                                                         \
 			__event = group->seq_events[__ticket];                 \
@@ -96,8 +93,14 @@
 		group;                                                         \
 	})
 
+#define vmp_report_max_nr_event(task)\
+			pr_info("vmp: %s pid=%d tsk=%s event=%u max event\n",  \
+				task->vmp_event_group->name,                   \
+				task_pid_nr(task), task->comm,                 \
+				task->vmp_event_group->max_nr_seq_event);      \
+
 #define VMP_DEFINE_EVENT(name, nr_event, proto, args)                          \
-	void vmp_##name##_enter(struct task_struct *task, proto) \
+	void vmp_##name##_enter(struct task_struct *task, proto)               \
 	{                                                                      \
 		struct vmp_event_group *group;                                 \
 		if (!trace_##name##_enabled())                                 \
@@ -109,7 +112,7 @@
 			return;                                                \
 		__vmp_##name##_enter(group, args);                             \
 	}                                                                      \
-	void vmp_##name##_exit(struct task_struct *task, proto)  \
+	void vmp_##name##_exit(struct task_struct *task, proto)                \
 	{                                                                      \
 		if (!trace_##name##_enabled())                                 \
 			return;                                                \
@@ -119,10 +122,13 @@
 			return;                                                \
 		if (task->vmp_event_group->type != vmp_type_##name)            \
 			return;                                                \
+		if (atomic_read(&task->vmp_event_group->ticket) >=             \
+		    task->vmp_event_group->max_nr_seq_event)                   \
+			vmp_report_max_nr_event(task);                         \
 		__vmp_##name##_exit(task->vmp_event_group, args);              \
 		task->vmp_event_group = NULL;                                  \
 	}                                                                      \
-	void vmp_##name##_record(proto)                          \
+	void vmp_##name##_record(proto)                                        \
 	{                                                                      \
 		if (!trace_##name##_enabled())                                 \
 			return;                                                \

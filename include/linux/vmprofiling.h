@@ -68,6 +68,10 @@ struct vmp_pgtable_generic {
 	unsigned long nr_pmd_locked;
 	unsigned long nr_mmap_locked;
 	unsigned long long nr_page_table_locked;
+	unsigned long long nr_pte_get_many;
+	unsigned long long nr_pte_put_many;
+	unsigned long long nr_get_unless_zero;
+	unsigned long long nr_free_user_pte_table;
 };
 
 
@@ -78,6 +82,10 @@ enum {
 	VMP_PGTABLE_DECLARE(pmd_locked) = 0x002,
 	VMP_PGTABLE_DECLARE(mmap_locked) = 0x004,
 	VMP_PGTABLE_DECLARE(page_table_locked) = 0x008,
+	VMP_PGTABLE_DECLARE(pte_get_many) = 0x010,
+	VMP_PGTABLE_DECLARE(pte_put_many) = 0x020,
+	VMP_PGTABLE_DECLARE(get_unless_zero) = 0x040,
+	VMP_PGTABLE_DECLARE(free_user_pte_table) = 0x080,
 };
 
 enum {
@@ -85,6 +93,8 @@ enum {
 	VMP_PGTABLE_DECLARE(enter) = 0,
 	VMP_PGTABLE_DECLARE(exit),
 	VMP_PGTABLE_DECLARE(copy_page_range),
+	VMP_PGTABLE_DECLARE(seq_event_pte_get_many),
+	VMP_PGTABLE_DECLARE(seq_event_pte_put_many),
 };
 
 #undef VMP_PGTABLE_DECLARE

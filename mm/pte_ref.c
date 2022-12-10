@@ -12,6 +12,8 @@
 #include <asm/tlb.h>
 #include <asm/tlbflush.h>
 
+#include <linux/vmprofiling.h>
+
 #ifdef CONFIG_FREE_USER_PTE
 /*
  * pte_get_unless_zero - Increment refcount for the PTE page table
@@ -23,6 +25,7 @@ bool pte_get_unless_zero(pmd_t *pmd)
 	pgtable_t pte = pmd_pgtable(*pmd);
 
 	VM_BUG_ON(!PageTable(pte));
+	vmp_pgtable_record(NULL, vmp_get_unless_zero, false);
 	return atomic_inc_not_zero(&pte->pte_refcount);
 }
 
@@ -138,4 +141,5 @@ void free_user_pte_table(struct mmu_gather *tlb, struct mm_struct *mm,
 	mm_dec_nr_ptes(mm);
 	if (!tlb)
 		call_rcu(&pmd_pgtable(pmdval)->rcu_head, pte_free_rcu);
+	vmp_pgtable_record(NULL, vmp_free_user_pte_table, false);
 }
